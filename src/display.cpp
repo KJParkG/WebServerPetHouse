@@ -8,7 +8,7 @@
 
 // 디스플레이 초기화
 void setupDisplay() {
-  Serial2.begin(115200, SERIAL_8N1, 18, 17);
+  Serial2.begin(115200, SERIAL_8N1, 17, 18);
   myNex.begin(115200);
 }
 

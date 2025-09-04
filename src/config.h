@@ -15,7 +15,7 @@
 #include <driver/i2s.h>
 
 // ------------------ 디버그 출력 설정 -----------------------
-#define DEBUG_MODE // 이 줄을 주석 처리하면 모든 Serial 출력이 비활성화됩니다.
+#define DEBUG_MODE // 주석처리시 모든 Serial 출력 비활성화
 
 #ifdef DEBUG_MODE
   #define D_PRINT(...)    Serial.print(__VA_ARGS__)
@@ -48,7 +48,7 @@
 #define RatioMQ135CleanAir  3.6
 
 // ------------------ 오디오 녹음 설정 -----------------------
-const int SAMPLE_RATE       = 16000; // 샘플링 속도 (파일 크기를 위해 16kHz로 조정)
+const int SAMPLE_RATE       = 16000; // 샘플링 속도
 const int BIT_DEPTH         = 16;
 const int NUM_CHANNELS      = 1;     // 모노
 const int RECORD_SECONDS    = 10;    // 녹음 시간(초)
@@ -76,8 +76,8 @@ extern const long  gmtOffset_sec;
 extern const int   daylightOffset_sec;
 
 // ------------------ 동작 주기 설정 -----------------------
-const long update_interval      = 1000;
-const long sound_check_interval = 200;
+const long update_interval      = 1000; // 화면 센서 값 업데이트 주기
+const long sound_check_interval = 200; // 데시벨 측정 주기
 
 // ------------------ 전역 객체 선언 -----------------------
 extern DHTesp dht;

@@ -6,6 +6,6 @@
 void setupPins();
 void setupSensors();
 void handleSensorAndDisplayUpdates();
-void forceUploadSensorData(); // trigger2의 새 이름
+void forceUploadSensorData(); // trigger2
 
 #endif
