@@ -90,8 +90,8 @@ void setupWebServer() {
   server.on("/status", HTTP_GET, [](AsyncWebServerRequest *request) {
     D_PRINTLN("--- GET /status 요청 수신 ---");
     JsonDocument doc;
-    doc["fan_on"] = deviceState.isFanOn;
-    doc["heater_on"] = deviceState.isHeaterOn;
+    doc["f"] = deviceState.isFanOn;
+    doc["ht"] = deviceState.isHeaterOn;
     String jsonResponse;
     serializeJson(doc, jsonResponse);
     request->send(200, "application/json", jsonResponse);

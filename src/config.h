@@ -13,6 +13,9 @@
 #include <HTTPClient.h>
 #include <EasyNextionLibrary.h>
 #include <driver/i2s.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 // ------------------ 디버그 출력 설정 -----------------------
 #define DEBUG_MODE // 주석처리시 모든 Serial 출력 비활성화
@@ -48,7 +51,7 @@
 #define RatioMQ135CleanAir  3.6
 
 // ------------------ 오디오 녹음 설정 -----------------------
-const int SAMPLE_RATE       = 16000; // 샘플링 속도
+const int SAMPLE_RATE       = 44100; // 샘플링 속도
 const int BIT_DEPTH         = 16;
 const int NUM_CHANNELS      = 1;     // 모노
 const int RECORD_SECONDS    = 10;    // 녹음 시간(초)
@@ -59,8 +62,10 @@ const int RECORD_SECONDS    = 10;    // 녹음 시간(초)
 #define DB_CHECK_BUFFER_SIZE      1024
 const int REQUIRED_CONSECUTIVE_HITS = 3; // 연속으로 3번 이상 기준 데시벨 초과 시 녹음
 
-const int WAV_HEADER_SIZE = 44;
 const uint32_t AUDIO_DATA_SIZE = RECORD_SECONDS * SAMPLE_RATE * NUM_CHANNELS * (BIT_DEPTH / 8);
+const int MP3_BITRATE       = 128;    // MP3 인코딩 비트레이트 (kbps)
+const uint32_t MP3_BUFFER_SIZE = 204800; // 100KB MP3 버퍼 (넉넉하게 설정)
+
 
 // ------------------ 네트워크 및 서버 설정 -----------------
 extern const char* upload_server;
@@ -93,8 +98,12 @@ struct DeviceState {
 };
 extern DeviceState deviceState;
 
+// ------------------ FreeRTOS 핸들 선언 --------------------
+extern SemaphoreHandle_t audioSemaphore;
+extern TaskHandle_t audioTaskHandle;
+
 // ------------------ 전역 버퍼 선언 -----------------------
 extern int16_t* audio_buffer_psram;
-extern byte wav_header[WAV_HEADER_SIZE];
+extern uint8_t* mp3_buffer_psram;
 
 

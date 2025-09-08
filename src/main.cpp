@@ -23,23 +23,41 @@ String unique_ap_name;
 DHTesp dht;
 MQUnifiedsensor MQ135(board, Voltage_Resolution, ADC_Bit_Resolution, MQ135_PIN, sensortype);
 EasyNex myNex(Serial2);
-AsyncWebServer server(80); // <<-- 바로 이 줄이 'server' 객체를 실제로 만드는 코드입니다.
-
+AsyncWebServer server(80); // server 객체 생성 80번
 // 전역 상태 변수
 DeviceState deviceState;
 
+// FreeRTOS 핸들 정의
+SemaphoreHandle_t audioSemaphore;
+TaskHandle_t audioTaskHandle;
+
 // 오디오 버퍼
 int16_t* audio_buffer_psram = NULL;
-byte wav_header[WAV_HEADER_SIZE];
+uint8_t* mp3_buffer_psram = NULL;
+
+// 오디오 Task 함수 (audio.cpp에 구현됨)
+void audio_task_function(void *pvParameters);
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
-  D_PRINTLN("\n--- 펫 드라이룸 시스템 시작 (Web Server Mode) ---");
+  D_PRINTLN("--- 펫 드라이룸 시스템 시작 (Web Server Mode) ---");
 
   setupPins();
   setupDisplay();
   setupSensors();
+  
+  // 오디오 Task 생성
+  audioSemaphore = xSemaphoreCreateBinary();
+  xTaskCreatePinnedToCore(
+      audio_task_function,    // Task 함수
+      "Audio Task",           // Task 이름
+      10000,                  // Stack 크기
+      NULL,                   // Task 파라미터
+      1,                      // 우선순위
+      &audioTaskHandle,       // Task 핸들
+      1);                     // Core 1에서 실행
+
   setupWiFi();
   setupWebServer();
   setupAudio();

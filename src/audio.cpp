@@ -4,8 +4,38 @@
 #include "audio.h"
 #include "network.h" // getCurrentDateTime(), uploadSensorData() 호출을 위해 포함
 
+// Shine MP3 인코더 라이브러리 (C언어) 포함
+extern "C" {
+  #include "layer3.h"
+}
+
 unsigned long last_sound_check = 0;
 int consecutive_high_count = 0;
+
+// 새로운 실시간 녹음 및 업로드 함수
+void realtimeRecordAndUpload();
+
+// 오디오 Task 함수
+void audio_task_function(void *pvParameters) {
+  for (;;) {
+    // 세마포를 받을 때까지 무한정 대기
+    if (xSemaphoreTake(audioSemaphore, portMAX_DELAY) == pdTRUE) {
+      D_PRINTLN("[Audio Task] 세마포 수신. 실시간 녹음 및 업로드 시작.");
+      deviceState.isRecording = true;
+
+      realtimeRecordAndUpload(); // 새로운 실시간 함수 호출
+
+      // 녹음 후 현재 센서 데이터도 함께 전송
+      float temp = dht.getTemperature();
+      float humi = dht.getHumidity();
+      float co2 = MQ135.readSensor();
+      uploadSensorData(temp, humi, co2 + 400);
+
+      deviceState.isRecording = false;
+      D_PRINTLN("[Audio Task] 작업 완료.");
+    }
+  }
+}
 
 void initI2S() {
   i2s_config_t i2s_config = {
@@ -33,19 +63,10 @@ void initI2S() {
 }
 
 void setupAudio() {
-  if (!psramInit()) {
-    D_PRINTLN("PSRAM을 찾을 수 없습니다.");
-  } else {
-    audio_buffer_psram = (int16_t*)ps_malloc(AUDIO_DATA_SIZE);
-    if (audio_buffer_psram == NULL) {
-      D_PRINTLN("PSRAM 메모리 할당 실패. 프로그램을 중지합니다.");
-      while (1);
-    }
-    D_PRINTLN("PSRAM 오디오 버퍼 할당 성공");
-  }
-
+  // PSRAM 버퍼 할당 코드 제거. 더 이상 큰 버퍼가 필요 없음.
   initI2S();
   i2s_start(I2S_PORT); // 소음 감지를 위해 I2S를 계속 켜 둡니다.
+  D_PRINTLN("실시간 오디오 처리를 위해 I2S 초기화 완료.");
 }
 
 void handleSoundCheck() {
@@ -76,89 +97,52 @@ void handleSoundCheck() {
 
       if (consecutive_high_count >= REQUIRED_CONSECUTIVE_HITS) {
         D_PRINTF("\n!!! %.1f dB 이상의 지속적인 소음 감지 (%.2f dB) !!!\n", SOUND_DETECT_DB, db_spl);
-        deviceState.isRecording = true;
         consecutive_high_count = 0;
         
-        recordAudio();
-        createWavHeader(wav_header, AUDIO_DATA_SIZE);
-        uploadWavFile();
-
-        // 녹음 후 현재 센서 데이터도 함께 전송
-        float temp = dht.getTemperature();
-        float humi = dht.getHumidity();
-        float co2 = MQ135.readSensor();
-        uploadSensorData(temp, humi, co2 + 400);
-
-        deviceState.isRecording = false;
+        xSemaphoreGive(audioSemaphore);
       }
     }
   }
 }
 
-void createWavHeader(byte* header, uint32_t audioDataSize) {
-    uint32_t fileSize = audioDataSize + WAV_HEADER_SIZE - 8;
-    uint32_t byteRate = SAMPLE_RATE * NUM_CHANNELS * (BIT_DEPTH / 8);
-    uint16_t blockAlign = NUM_CHANNELS * (BIT_DEPTH / 8);
+void realtimeRecordAndUpload() {
+    D_PRINTLN("\n--- 실시간 MP3 인코딩 및 업로드 시작 ---");
 
-    header[0] = 'R'; header[1] = 'I'; header[2] = 'F'; header[3] = 'F';
-    memcpy(&header[4], &fileSize, 4);
-    header[8] = 'W'; header[9] = 'A'; header[10] = 'V'; header[11] = 'E';
-    header[12] = 'f'; header[13] = 'm'; header[14] = 't'; header[15] = ' ';
-    header[16] = 16; header[17] = 0; header[18] = 0; header[19] = 0;
-    header[20] = 1; header[21] = 0;
-    header[22] = NUM_CHANNELS; header[23] = 0;
-    memcpy(&header[24], &SAMPLE_RATE, 4);
-    memcpy(&header[28], &byteRate, 4);
-    memcpy(&header[32], &blockAlign, 2);
-    header[34] = BIT_DEPTH; header[35] = 0;
-    header[36] = 'd'; header[37] = 'a'; header[38] = 't'; header[39] = 'a';
-    memcpy(&header[40], &audioDataSize, 4);
+    // 1. Shine MP3 인코더 초기화
+    shine_config_t config;
+    shine_set_config_mpeg_defaults(&config.mpeg);
+    config.wave.samplerate = SAMPLE_RATE;
+    config.wave.channels = PCM_MONO;
+    config.mpeg.bitr = MP3_BITRATE;
+    config.mpeg.mode = MONO;
     
-    D_PRINTLN("WAV 헤더 생성 완료.");
-}
-
-void recordAudio() {
-    D_PRINTF("\n--- %d초 녹음 시작... ---\n", RECORD_SECONDS);
-    
-    size_t total_bytes_written = 0;
-    const int i2s_read_buffer_size = 4096;
-    uint8_t* i2s_read_buffer = (uint8_t*)malloc(i2s_read_buffer_size);
-
-    if (i2s_read_buffer == NULL) {
-        D_PRINTLN("I2S 읽기 버퍼 할당 실패!");
+    if (shine_check_config(config.wave.samplerate, config.mpeg.bitr) < 0) {
+        D_PRINTLN("지원되지 않는 샘플레이트/비트레이트 설정입니다.");
+        return;
+    }
+    shine_t s = shine_initialise(&config);
+    if (!s) {
+        D_PRINTLN("Shine 인코더 초기화 실패.");
         return;
     }
 
-    while (total_bytes_written < AUDIO_DATA_SIZE) {
-        size_t bytes_read = 0;
-        i2s_read(I2S_PORT, i2s_read_buffer, i2s_read_buffer_size, &bytes_read, pdMS_TO_TICKS(1000));
-        
-        if (bytes_read > 0) {
-            size_t bytes_to_copy = (AUDIO_DATA_SIZE - total_bytes_written < bytes_read) ? 
-                                   (AUDIO_DATA_SIZE - total_bytes_written) : bytes_read;
-            
-            memcpy((uint8_t*)audio_buffer_psram + total_bytes_written, i2s_read_buffer, bytes_to_copy);
-            total_bytes_written += bytes_to_copy;
-        }
-    }
-    free(i2s_read_buffer);
-    D_PRINTLN("녹음 완료.");
-    D_PRINTF("PSRAM에 저장된 총 바이트: %u / %u\n", total_bytes_written, AUDIO_DATA_SIZE);
-}
-
-void uploadWavFile() {
-    D_PRINTLN("\n--- WAV 파일 업로드 시작 ---");
+    // 2. 네트워크 클라이언트 연결
     WiFiClient client;
-    
     if (!client.connect(upload_server, upload_port)) {
         D_PRINTLN("서버 연결 실패!");
+        shine_close(s);
         return;
     }
     D_PRINTLN("서버 연결 성공.");
 
+    // 3. HTTP 헤더 전송 (Chunked-Encoding은 서버 지원이 필요하므로, 예상 길이를 보내는 방식으로 우선 구현)
+    // 예상 MP3 크기 계산 (정확하지 않을 수 있음, 헤더 전송을 위해 대략적으로 계산)
+    // (샘플레이트 * 시간 * 비트레이트) / 8 / 압축률(대략 11)
+    uint32_t estimated_mp3_size = (SAMPLE_RATE * RECORD_SECONDS * MP3_BITRATE) / 8 / 11;
+
     String boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
     String dateTime = getCurrentDateTime();
-    String filename = String(device_id) + dateTime + ".wav";
+    String filename = String(device_id) + dateTime + ".mp3";
 
     String head;
     head += "--" + boundary + "\r\n";
@@ -167,11 +151,70 @@ void uploadWavFile() {
     head += "Content-Disposition: form-data; name=\"d\"\r\n\r\n" + dateTime + "\r\n";
     head += "--" + boundary + "\r\n";
     head += "Content-Disposition: form-data; name=\"awfile\"; filename=\"" + filename + "\"\r\n";
-    head += "Content-Type: audio/wav\r\n\r\n";
-
+    head += "Content-Type: audio/mpeg\r\n\r\n";
     String tail = "\r\n--" + boundary + "--\r\n";
     
-    uint32_t contentLength = head.length() + WAV_HEADER_SIZE + AUDIO_DATA_SIZE + tail.length();
+    // Content-Length를 지금 알 수 없으므로, 스트리밍을 위해 헤더를 나중에 보내거나 Chunked-Encoding을 사용해야 함.
+    // 여기서는 먼저 연결하고, 데이터를 모은 뒤 길이를 계산해서 보내는 방식을 유지하되, 메모리 버퍼 대신 직접 전송 로직으로 변경.
+    // 하지만 HTTP/1.1은 Content-Length 없이 Chunked transfer를 지원하지만, 구현이 복잡해짐.
+    // 여기서는 우선 MP3 데이터를 임시 버퍼에 모았다가 한번에 보내는 방식으로 다시 구현합니다.
+    // 실시간 스트리밍의 진정한 이점을 얻으려면 서버 측에서 스트림을 직접 받을 수 있어야 합니다.
+    
+    uint8_t* mp3_buffer = (uint8_t*)malloc(MP3_BUFFER_SIZE);
+    if (!mp3_buffer) {
+        D_PRINTLN("MP3 버퍼를 위한 메모리 할당 실패.");
+        client.stop();
+        shine_close(s);
+        return;
+    }
+
+    int samples_per_pass = shine_samples_per_pass(s);
+    int16_t pcm_buffer[samples_per_pass];
+    size_t total_samples_read = 0;
+    size_t total_samples_to_read = SAMPLE_RATE * RECORD_SECONDS;
+    int mp3_bytes_written = 0;
+
+    D_PRINTF("%d초 동안 녹음 및 인코딩 진행...\n", RECORD_SECONDS);
+
+    while (total_samples_read < total_samples_to_read) {
+        size_t bytes_read = 0;
+        i2s_read(I2S_PORT, (char*)pcm_buffer, sizeof(pcm_buffer), &bytes_read, portMAX_DELAY);
+
+        if (bytes_read > 0) {
+            int samples_read = bytes_read / sizeof(int16_t);
+            total_samples_read += samples_read;
+
+            unsigned char *data;
+            int len;
+            int16_t* pcm_ptr = pcm_buffer;
+            data = shine_encode_buffer(s, &pcm_ptr, &len);
+
+            if (len > 0) {
+                if (mp3_bytes_written + len > MP3_BUFFER_SIZE) {
+                    D_PRINTLN("MP3 버퍼 오버플로우!");
+                    break;
+                }
+                memcpy(mp3_buffer + mp3_bytes_written, data, len);
+                mp3_bytes_written += len;
+            }
+        }
+    }
+
+    // 마지막 남은 데이터 플러시
+    unsigned char *flushed_data;
+    int flushed_len;
+    flushed_data = shine_flush(s, &flushed_len);
+    if (flushed_len > 0) {
+        if (mp3_bytes_written + flushed_len <= MP3_BUFFER_SIZE) {
+            memcpy(mp3_buffer + mp3_bytes_written, flushed_data, flushed_len);
+            mp3_bytes_written += flushed_len;
+        }
+    }
+    
+    D_PRINTF("인코딩 완료. 총 MP3 크기: %d bytes\n", mp3_bytes_written);
+
+    // 이제 전체 크기를 알았으므로 헤더와 함께 전송
+    uint32_t contentLength = head.length() + mp3_bytes_written + tail.length();
 
     client.println("POST " + String(upload_file_path) + " HTTP/1.1");
     client.println("Host: " + String(upload_server));
@@ -182,17 +225,13 @@ void uploadWavFile() {
 
     D_PRINTLN("페이로드 전송 중...");
     client.print(head);
-    client.write((const byte*)wav_header, WAV_HEADER_SIZE);
-    client.write((const byte*)audio_buffer_psram, AUDIO_DATA_SIZE);
+    client.write((const byte*)mp3_buffer, mp3_bytes_written);
     client.print(tail);
     D_PRINTLN("페이로드 전송 완료.");
 
-    // 서버 응답 대기
+    // 서버 응답 대기 및 출력
     unsigned long timeout = millis();
-    while (!client.available() && millis() - timeout < 5000) {
-        delay(10);
-    }
-    
+    while (!client.available() && millis() - timeout < 5000) { delay(10); }
     D_PRINTLN("--- 서버 응답 ---");
     while(client.available()){
       String line = client.readStringUntil('\n');
@@ -200,16 +239,15 @@ void uploadWavFile() {
     }
     D_PRINTLN("-----------------");
 
+    // 리소스 정리
+    free(mp3_buffer);
     client.stop();
+    shine_close(s);
     D_PRINTLN("업로드 과정 종료.");
 }
 
 // Nextion 버튼으로 녹음 및 업로드 강제 실행
 void forceRecordAndUpload() {
-  D_PRINTLN("Nextion 요청: 녹음 및 업로드 실행");
-  deviceState.isRecording = true;
-  recordAudio();
-  createWavHeader(wav_header, AUDIO_DATA_SIZE);
-  uploadWavFile();
-  deviceState.isRecording = false;
+  D_PRINTLN("Nextion 요청: 녹음 및 업로드 신호 전송");
+  xSemaphoreGive(audioSemaphore);
 }
